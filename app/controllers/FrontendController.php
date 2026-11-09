@@ -5,7 +5,12 @@ class FrontendController extends Controller
 {
     public function home()
     {
-        redirect(site_url('app/'));
+        header('Content-Type: application/json; charset=UTF-8');
+        echo json_encode([
+            'service' => 'KalingaLink API',
+            'status' => 'ok',
+            'frontend_url' => trim((string) getenv('APP_BASE_URL')) ?: null,
+        ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     }
 
     public function index()

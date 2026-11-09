@@ -255,8 +255,10 @@ to source code or commit `.env`.
 
 ### Base URL
 
-The application routes the KalingaLink frontend under `/app/`; `/` redirects
-there. The configured base URL is in `app/config/config.php`.
+The React frontend is deployed separately. The backend root (`/`) returns a
+JSON API status and the configured `APP_BASE_URL`; it does not redirect to an
+embedded frontend bundle. Optional embedded frontend routes under `/app/`
+require building the frontend bundle first.
 
 ---
 
