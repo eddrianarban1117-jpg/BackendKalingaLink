@@ -299,6 +299,22 @@ class Database {
             $this->db = new PDO($dsn, $username, $password, $options);
             $this->driver = $this->db->getAttribute(PDO::ATTR_DRIVER_NAME);
         } catch (Exception $e) {
+            $error_info = $e instanceof PDOException && is_array($e->errorInfo)
+                ? $e->errorInfo
+                : [];
+            $log_message = preg_replace('/[\r\n]+/', ' ', $e->getMessage());
+            error_log(sprintf(
+                '[Database connection] host=%s port=%s database=%s ssl_ca_exists=%s ssl_ca_readable=%s sqlstate=%s driver_code=%s message=%s',
+                $host,
+                (string) $port,
+                $dbname_value,
+                is_file($ca_file) ? 'yes' : 'no',
+                is_readable($ca_file) ? 'yes' : 'no',
+                (string) ($error_info[0] ?? 'unavailable'),
+                (string) ($error_info[1] ?? 'unavailable'),
+                $log_message
+            ));
+
             $error = load_class('Errors', 'kernel');
             $error->show_database_error(
                 $e->getMessage(),
