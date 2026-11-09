@@ -1,0 +1,37 @@
+# macOS
+.DS_Store
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Certificates and private keys
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Dependencies
+vendor/
+app/vendor/
+composer.lock
+
+# Cache & Logs
+runtime/*
+!runtime/.htaccess
+!runtime/index.html
+/public/runtime/
+/public/kalingalink/
+/public/opcache_test.php
+*.log
+*.cache
+*.bak
+
+# IDE
+.idea/
+.vscode/
+*.sublime-*
+
+# OS
+Thumbs.db

@@ -1,0 +1,16 @@
+.git
+.env
+.env.*
+!.env.example
+**/node_modules/
+**/vendor/
+*.pem
+*.key
+*.p12
+*.pfx
+runtime/cache/
+runtime/logs/
+public/runtime/
+public/kalingalink/
+public/opcache_test.php
+.vscode/
