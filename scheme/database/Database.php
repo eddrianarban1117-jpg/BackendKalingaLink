@@ -244,7 +244,10 @@ class Database {
 
         // Aiven MySQL SSL certificate path
         $ca_file = $database_config['ssl_ca'] ?? '';
-        if ($ca_file === '') {
+        $render_ca_file = '/etc/secrets/ca.pem';
+        if (($ca_file === '' || !is_file($ca_file)) && is_file($render_ca_file)) {
+            $ca_file = $render_ca_file;
+        } elseif ($ca_file === '') {
             $ca_file = dirname(dirname(__DIR__)) . DIRECTORY_SEPARATOR . 'ca.pem';
         }
 
