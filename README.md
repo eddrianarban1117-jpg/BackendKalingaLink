@@ -60,7 +60,9 @@ token secrets with independently generated random values. Remote MySQL
 connections require the Aiven CA certificate. For Render, add the certificate
 as a Secret File named `ca.pem`; the backend detects it at
 `/etc/secrets/ca.pem`. Do not add the certificate to the repository or Docker
-image. For other hosts, set `DB_SSL_CA` to the certificate's absolute path.
+image. The Docker image adds Apache's `www-data` user to group `1000`, which
+Render uses to grant access to mounted secret files. For other hosts, set
+`DB_SSL_CA` to the certificate's absolute path.
 Never deploy the example seed password or token secrets.
 
 For hosted deployments, configure `DB_HOST`, `DB_USER`, `DB_NAME`,
