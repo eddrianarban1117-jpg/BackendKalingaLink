@@ -180,14 +180,21 @@ sends the message successfully. Rejection remarks are emailed to the teacher. Mi
 workflow and email-delivery tracking tables, while preserving already-active
 teacher accounts.
 
-Set `MAIL_PORT=587` and `MAIL_ENCRYPTION=tls`. For Brevo, set
+For Render, prefer the Brevo HTTP API because it sends over HTTPS and does not
+depend on outbound SMTP access. Create a Brevo API key and set
+`BREVO_API_KEY` in the backend service environment, and set
+`MAIL_FROM_ADDRESS` to a sender verified with Brevo. When `BREVO_API_KEY` is
+present, the backend uses the API automatically; SMTP settings are ignored.
+Never commit API keys.
+
+For SMTP fallback, set `MAIL_PORT=587` and `MAIL_ENCRYPTION=tls`. For Brevo, set
 `MAIL_HOST=smtp-relay.brevo.com`, `MAIL_USERNAME` to the SMTP login shown in
 Brevo, and `MAIL_PASSWORD` to a Brevo SMTP key (not an API key or account
 password). For Gmail, use `MAIL_HOST=smtp.gmail.com`, the Gmail address as
 `MAIL_USERNAME`, and a Google App Password as `MAIL_PASSWORD`. Set
-`MAIL_FROM_ADDRESS` to a sender verified with the selected provider.
-Never commit mail credentials. A successful SMTP submission means the
-provider accepted the message; it does not guarantee inbox delivery.
+`MAIL_FROM_ADDRESS` to a sender verified with the selected provider. Never
+commit mail credentials. A successful provider submission means the provider
+accepted the message; it does not guarantee inbox delivery.
 
 Public teacher registration accepts up to five optional PDF, JPG, or PNG
 supporting documents (10 MB each, 30 MB total). Files are stored under the

@@ -618,13 +618,13 @@ class AdminTeachersApiController extends Controller
             return ['sent' => true, 'reason' => null];
         } catch (Throwable $error) {
             error_log('Teacher review email failed (' . get_class($error) . ').');
-            return ['sent' => false, 'reason' => 'SMTP could not send the review email. Check the server mail configuration.'];
+            return ['sent' => false, 'reason' => 'The email provider could not send the review email. Check the server mail configuration.'];
         }
     }
 
     private function send_approval_message(array $teacher, $message_id)
     {
-        $reason = 'SMTP could not send the approval message. Check the server mail configuration.';
+        $reason = 'The email provider could not send the approval message. Check the server mail configuration.';
         try {
             $name = $this->teacher_name($teacher);
             $username = (string) ($teacher['username'] ?? '');

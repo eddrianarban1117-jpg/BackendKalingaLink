@@ -8,6 +8,7 @@ class SmtpMailer
 
     public function send($recipient, $subject, $text, $html)
     {
+        $brevo_api_key = trim((string) getenv('BREVO_API_KEY'));
         $host = trim((string) getenv('MAIL_HOST'));
         $port = (int) (getenv('MAIL_PORT') ?: 587);
         $username = trim((string) getenv('MAIL_USERNAME'));
@@ -15,6 +16,19 @@ class SmtpMailer
         $encryption = strtolower(trim((string) getenv('MAIL_ENCRYPTION')));
         $sender = trim((string) getenv('MAIL_FROM_ADDRESS'));
         $sender_name = trim((string) (getenv('MAIL_FROM_NAME') ?: 'KalingaLink Administration'));
+
+        if ($brevo_api_key !== '') {
+            $this->send_with_brevo_api(
+                $brevo_api_key,
+                $sender,
+                $sender_name,
+                $recipient,
+                $subject,
+                $text,
+                $html
+            );
+            return;
+        }
 
         if (!in_array($host, ['smtp.gmail.com', 'smtp-relay.brevo.com'], true)
             || $port !== 587 || $encryption !== 'tls'
@@ -88,6 +102,72 @@ class SmtpMailer
                 fclose($this->socket);
             }
             $this->socket = null;
+        }
+    }
+
+    private function send_with_brevo_api($api_key, $sender, $sender_name, $recipient, $subject, $text, $html)
+    {
+        if ($api_key === ''
+            || preg_match('/[\r\n]/', $api_key)
+            || $sender === ''
+            || !filter_var($sender, FILTER_VALIDATE_EMAIL)
+            || !filter_var($recipient, FILTER_VALIDATE_EMAIL)
+            || preg_match('/[\r\n]/', $sender_name)
+            || preg_match('/[\r\n]/', $subject)) {
+            throw new RuntimeException('Email sender or message headers are invalid.');
+        }
+        $payload = json_encode([
+            'sender' => ['name' => $sender_name, 'email' => $sender],
+            'to' => [['email' => $recipient]],
+            'subject' => $subject,
+            'textContent' => $text,
+            'htmlContent' => $html,
+        ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
+        $context = stream_context_create([
+            'http' => [
+                'method' => 'POST',
+                'header' => implode("\r\n", [
+                    'accept: application/json',
+                    'api-key: ' . $api_key,
+                    'content-type: application/json',
+                ]),
+                'content' => $payload,
+                'timeout' => $this->timeout,
+                'ignore_errors' => true,
+                'follow_location' => 0,
+            ],
+            'ssl' => [
+                'verify_peer' => true,
+                'verify_peer_name' => true,
+                'allow_self_signed' => false,
+            ],
+        ]);
+        error_clear_last();
+        $response = @file_get_contents('https://api.brevo.com/v3/smtp/email', false, $context);
+        $request_error = error_get_last();
+        $status = 0;
+        foreach ($http_response_header ?? [] as $header) {
+            if (preg_match('/^HTTP\/\S+\s+(\d{3})/i', $header, $matches)) {
+                $status = (int) $matches[1];
+            }
+        }
+
+        if ($response === false) {
+            $error_message = is_array($request_error)
+                ? (string) ($request_error['message'] ?? 'Unknown network error')
+                : 'Unknown network error';
+            $error_message = substr(preg_replace('/[\r\n]+/', ' ', $error_message), 0, 180);
+            error_log('Brevo API request failed: ' . $error_message);
+            throw new RuntimeException('Could not connect to the Brevo email API.');
+        }
+        if ($status < 200 || $status >= 300) {
+            $response_data = json_decode($response, true);
+            $provider_code = is_array($response_data)
+                ? (string) ($response_data['code'] ?? 'unknown')
+                : 'unknown';
+            $provider_code = preg_replace('/[^A-Za-z0-9_.-]/', '', $provider_code);
+            error_log('Brevo API rejected the email request (HTTP ' . $status . ', code ' . $provider_code . ').');
+            throw new RuntimeException('Brevo did not accept the email request.');
         }
     }
 
