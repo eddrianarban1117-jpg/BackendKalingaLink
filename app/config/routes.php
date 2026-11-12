@@ -53,6 +53,9 @@ $router->get('/api/parent/activities', 'ParentActivitiesApiController::index');
 $router->options('/api/settings', 'SettingsApiController::index');
 $router->get('/api/settings', 'SettingsApiController::index');
 $router->put('/api/settings', 'SettingsApiController::save');
+$router->options('/api/settings/profile-photo', 'SettingsApiController::profile_photo');
+$router->get('/api/settings/profile-photo', 'SettingsApiController::profile_photo');
+$router->post('/api/settings/profile-photo', 'SettingsApiController::upload_profile_photo');
 
 // OPTIONS - Token refresh and logout preflight
 $router->options('/api/refresh', 'ApiAuthController::refresh');
