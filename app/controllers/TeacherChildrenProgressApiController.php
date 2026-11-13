@@ -200,16 +200,23 @@ class TeacherChildrenProgressApiController extends Controller
         try {
             $this->db->table('learning_progress')->insert([
                 'child_id' => (int) $child_id,
-                'program_id' => null,
                 'teacher_user_id' => (int) $user['id'],
                 'domain' => $domain,
                 'skill' => $skill,
                 'rating' => (int) $rating,
                 'observation' => $observation !== '' ? $observation : null,
                 'recorded_at' => $recorded_at . ' ' . date('H:i:s'),
-                'created_at' => date('Y-m-d H:i:s'),
             ]);
-            if ($assigned['parent_user_id']) {
+            $this->db->commit();
+        } catch (Throwable $error) {
+            $this->db->roll_back();
+            throw $error;
+        }
+
+        $notification_warning = null;
+        if ($assigned['parent_user_id']) {
+            $this->db->transaction();
+            try {
                 $child_name = trim($assigned['first_name'] . ' ' . $assigned['last_name']);
                 $this->db->table('notifications')->insert([
                     'actor_user_id' => (int) $user['id'],
@@ -228,13 +235,23 @@ class TeacherChildrenProgressApiController extends Controller
                     'user_id' => (int) $assigned['parent_user_id'],
                     'created_at' => date('Y-m-d H:i:s'),
                 ]);
+                $this->db->commit();
+            } catch (Throwable $notification_error) {
+                $this->db->roll_back();
+                $log_message = preg_replace(
+                    '/[\r\n]+/',
+                    ' ',
+                    $notification_error->getMessage()
+                );
+                error_log('[Teacher progress notification] ' . $log_message);
+                $notification_warning = 'The progress record was saved, but the parent notification could not be created.';
             }
-            $this->db->commit();
-        } catch (Throwable $error) {
-            $this->db->roll_back();
-            throw $error;
         }
-        $this->api->respond(['status' => true, 'message' => 'Progress record saved.']);
+        $this->api->respond([
+            'status' => true,
+            'message' => 'Progress record saved.',
+            'warning' => $notification_warning,
+        ]);
     }
 
     private function progress_status($score)
