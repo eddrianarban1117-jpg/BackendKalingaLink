@@ -215,10 +215,10 @@ class TeacherChildrenProgressApiController extends Controller
 
         $notification_warning = null;
         if ($assigned['parent_user_id']) {
-            $this->db->transaction();
+            $this->db->raw('START TRANSACTION');
             try {
                 $child_name = trim($assigned['first_name'] . ' ' . $assigned['last_name']);
-                $this->db->table('notifications')->insert([
+                $notification_id = (int) $this->db->table('notifications')->insert([
                     'actor_user_id' => (int) $user['id'],
                     'title' => 'Child progress updated',
                     'message' => 'New progress was recorded for ' . $child_name
@@ -230,14 +230,17 @@ class TeacherChildrenProgressApiController extends Controller
                     'notification_type' => 'Progress',
                     'created_at' => date('Y-m-d H:i:s'),
                 ]);
+                if ($notification_id < 1) {
+                    throw new RuntimeException('Notification insert did not return an ID.');
+                }
                 $this->db->table('notification_recipients')->insert([
-                    'notification_id' => (int) $this->db->last_id(),
+                    'notification_id' => $notification_id,
                     'user_id' => (int) $assigned['parent_user_id'],
                     'created_at' => date('Y-m-d H:i:s'),
                 ]);
-                $this->db->commit();
+                $this->db->raw('COMMIT');
             } catch (Throwable $notification_error) {
-                $this->db->roll_back();
+                $this->db->raw('ROLLBACK');
                 $log_message = preg_replace(
                     '/[\r\n]+/',
                     ' ',
