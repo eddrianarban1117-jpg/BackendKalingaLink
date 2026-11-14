@@ -178,7 +178,11 @@ link. If delivery fails, the account remains disabled until an administrator
 sends the message successfully. Rejection remarks are emailed to the teacher. Migration
 `026_teacher_invitation_acceptance.php` creates the teacher verification
 workflow and email-delivery tracking tables, while preserving already-active
-teacher accounts.
+teacher accounts. Migration `027_teacher_email_verification_codes.php` adds
+short-lived verification challenges for teacher signup. Public teacher
+registration now requires a six-digit code sent to the login email before the
+account can be submitted; codes expire after 15 minutes and allow up to five
+verification attempts.
 
 For Render, prefer the Brevo HTTP API because it sends over HTTPS and does not
 depend on outbound SMTP access. Create a Brevo API key and set

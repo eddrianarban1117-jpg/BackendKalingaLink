@@ -220,6 +220,174 @@ class ApiAuthController extends Controller
         $this->create_account('teacher', $this->api->body(false));
     }
 
+    public function send_teacher_email_code()
+    {
+        $this->api->require_method('POST');
+        $this->api->require_trusted_origin();
+        $this->api->rate_limit('teacher-email-code-send', 5, 900);
+
+        $input = $this->api->body(false);
+        $email = is_array($input) && is_string($input['email'] ?? null)
+            ? strtolower(trim($input['email']))
+            : '';
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($email) > 255) {
+            $this->api->respond_error('Enter a valid email address.', 400);
+            return;
+        }
+
+        $existing = $this->db->raw(
+            'SELECT id FROM users WHERE email = ? LIMIT 1',
+            [$email]
+        )->fetch(PDO::FETCH_ASSOC);
+        if ($existing) {
+            $this->api->respond_error('That email is already registered. Use another email or log in.', 409);
+            return;
+        }
+
+        $this->db->raw(
+            'DELETE FROM teacher_email_verifications WHERE expires_at <= ?',
+            [date('Y-m-d H:i:s')]
+        );
+        $previous_verification = $this->db->raw(
+            'SELECT created_at FROM teacher_email_verifications WHERE email = ? LIMIT 1',
+            [$email]
+        )->fetch(PDO::FETCH_ASSOC);
+        if ($previous_verification
+            && strtotime($previous_verification['created_at']) > time() - 60) {
+            $this->api->respond_error('Wait one minute before requesting another verification code.', 429);
+            return;
+        }
+
+        $code = (string) random_int(100000, 999999);
+        $code_hash = password_hash($code, PASSWORD_DEFAULT);
+        $challenge_id = bin2hex(random_bytes(32));
+        $challenge_hash = hash('sha256', $challenge_id);
+        $expires_at = date('Y-m-d H:i:s', time() + 900);
+        $created_at = date('Y-m-d H:i:s');
+        $this->db->raw(
+            'INSERT INTO teacher_email_verifications
+                (email, code_hash, challenge_hash, expires_at, attempts, verified_at, consumed_at, created_at)
+             VALUES (?, ?, ?, ?, 0, NULL, NULL, ?)
+             ON DUPLICATE KEY UPDATE
+                code_hash = VALUES(code_hash),
+                challenge_hash = VALUES(challenge_hash),
+                expires_at = VALUES(expires_at),
+                attempts = 0,
+                verified_at = NULL,
+                consumed_at = NULL,
+                created_at = VALUES(created_at)',
+            [$email, $code_hash, $challenge_hash, $expires_at, $created_at]
+        );
+
+        $text = "Your KalingaLink teacher registration verification code is: {$code}\n\n"
+            . "This code expires in 15 minutes. If you did not request it, you can ignore this email.";
+        $html = '<p>Your KalingaLink teacher registration verification code is:</p>'
+            . '<p style="font-size:28px;font-weight:bold;letter-spacing:6px">'
+            . htmlspecialchars($code, ENT_QUOTES, 'UTF-8')
+            . '</p><p>This code expires in 15 minutes. If you did not request it, you can ignore this email.</p>';
+
+        try {
+            $mailer = $this->call->library('SmtpMailer');
+            $mailer->send($email, 'Verify your KalingaLink teacher email', $text, $html);
+        } catch (Throwable $error) {
+            $this->db->raw(
+                'DELETE FROM teacher_email_verifications
+                 WHERE email = ? AND code_hash = ? AND challenge_hash = ?',
+                [$email, $code_hash, $challenge_hash]
+            );
+            $log_message = preg_replace('/[\r\n]+/', ' ', $error->getMessage());
+            error_log(
+                'Teacher email verification delivery failed (' . get_class($error) . '): '
+                . substr($log_message, 0, 240)
+            );
+            $this->api->respond_error(
+                'We could not send a verification code to this email. Check the address and try again.',
+                503
+            );
+            return;
+        }
+
+        $this->api->respond([
+            'status' => true,
+            'message' => 'A verification code was sent. Check your inbox and spam folder.',
+            'data' => ['challenge_id' => $challenge_id],
+        ]);
+    }
+
+    public function verify_teacher_email_code()
+    {
+        $this->api->require_method('POST');
+        $this->api->require_trusted_origin();
+        $this->api->rate_limit('teacher-email-code-verify', 10, 900);
+
+        $input = $this->api->body(false);
+        $email = is_array($input) && is_string($input['email'] ?? null)
+            ? strtolower(trim($input['email']))
+            : '';
+        $code = is_array($input) && is_string($input['code'] ?? null)
+            ? trim($input['code'])
+            : '';
+        $challenge_id = is_array($input) && is_string($input['challenge_id'] ?? null)
+            ? trim($input['challenge_id'])
+            : '';
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL) || strlen($email) > 255
+            || !preg_match('/^\d{6}$/', $code)
+            || !preg_match('/^[a-f0-9]{64}$/i', $challenge_id)) {
+            $this->api->respond_error('The code is incorrect or expired. Request a new code and try again.', 400);
+            return;
+        }
+
+        $challenge_hash = hash('sha256', $challenge_id);
+        $verification = $this->db->raw(
+            'SELECT code_hash, expires_at, attempts, verified_at, consumed_at
+             FROM teacher_email_verifications
+             WHERE email = ? AND challenge_hash = ? LIMIT 1',
+            [$email, $challenge_hash]
+        )->fetch(PDO::FETCH_ASSOC);
+        if (!$verification || $verification['consumed_at'] !== null
+            || strtotime($verification['expires_at']) <= time()
+            || (int) $verification['attempts'] >= 5
+            || !password_verify($code, $verification['code_hash'])) {
+            if ($verification && $verification['consumed_at'] === null
+                && (int) $verification['attempts'] < 5
+                && strtotime($verification['expires_at']) > time()) {
+                $this->db->raw(
+                    'UPDATE teacher_email_verifications
+                     SET attempts = attempts + 1
+                     WHERE email = ? AND challenge_hash = ?
+                       AND verified_at IS NULL AND attempts < 5',
+                    [$email, $challenge_hash]
+                );
+            }
+            $this->api->respond_error('The code is incorrect or expired. Request a new code and try again.', 400);
+            return;
+        }
+
+        $updated = $this->db->raw(
+            'UPDATE teacher_email_verifications
+             SET verified_at = ?
+             WHERE email = ? AND code_hash = ? AND challenge_hash = ?
+               AND consumed_at IS NULL
+               AND expires_at > ? AND attempts < 5',
+            [
+                date('Y-m-d H:i:s'),
+                $email,
+                $verification['code_hash'],
+                $challenge_hash,
+                date('Y-m-d H:i:s'),
+            ]
+        )->rowCount();
+        if ($updated !== 1 && $verification['verified_at'] === null) {
+            $this->api->respond_error('The code is incorrect or expired. Request a new code and try again.', 400);
+            return;
+        }
+
+        $this->api->respond([
+            'status' => true,
+            'message' => 'Email address verified.',
+        ]);
+    }
+
     public function refresh()
     {
         $this->api->require_method('POST');
@@ -375,6 +543,17 @@ class ApiAuthController extends Controller
             $this->api->respond_error('A valid login email is required.', 400);
             return;
         }
+        $email_verification_challenge_id = is_string($input['email_verification_challenge_id'] ?? null)
+            ? trim($input['email_verification_challenge_id'])
+            : '';
+        if ($role === 'teacher'
+            && !preg_match('/^[a-f0-9]{64}$/i', $email_verification_challenge_id)) {
+            $this->api->respond_error('Verify your login email before creating your teacher account.', 400);
+            return;
+        }
+        $email_verification_challenge_hash = $role === 'teacher'
+            ? hash('sha256', $email_verification_challenge_id)
+            : null;
         if (strlen($password) < 12 || !preg_match('/[A-Za-z]/', $password) || !preg_match('/[0-9]/', $password)) {
             $this->api->respond_error('Password must be at least 12 characters and include letters and numbers.', 400);
             return;
@@ -499,6 +678,25 @@ class ApiAuthController extends Controller
         $stored_photo = null;
         $stored_teacher_documents = [];
         try {
+            if ($role === 'teacher') {
+                $consumed_verification = $this->db->raw(
+                    'UPDATE teacher_email_verifications
+                     SET consumed_at = ?
+                     WHERE email = ? AND challenge_hash = ?
+                       AND verified_at IS NOT NULL
+                       AND expires_at > ? AND consumed_at IS NULL',
+                    [
+                        date('Y-m-d H:i:s'),
+                        $email,
+                        $email_verification_challenge_hash,
+                        date('Y-m-d H:i:s'),
+                    ]
+                )->rowCount();
+                if ($consumed_verification !== 1) {
+                    throw new InvalidArgumentException('Verify your login email before creating your teacher account.');
+                }
+            }
+
             $this->db->table('users')->insert([
                 'username' => $username,
                 'email' => $email,
@@ -594,6 +792,13 @@ class ApiAuthController extends Controller
                 ->get();
             if (!$profile) {
                 throw new RuntimeException('The role-specific account profile could not be saved.');
+            }
+            if ($role === 'teacher') {
+                $this->db->raw(
+                    'DELETE FROM teacher_email_verifications
+                     WHERE email = ? AND challenge_hash = ? AND consumed_at IS NOT NULL',
+                    [$email, $email_verification_challenge_hash]
+                );
             }
             $this->db->commit();
         } catch (Throwable $error) {
