@@ -22,7 +22,7 @@ class AdminTeachersApiController extends Controller
 
         $stats = $this->db->raw(
             'SELECT
-                COUNT(*) AS total,
+                SUM(CASE WHEN u.is_active = 1 THEN 1 ELSE 0 END) AS total,
                 SUM(CASE WHEN w.status IN (\'active\', \'approved_awaiting_acceptance\') THEN 1 ELSE 0 END) AS approved,
                 SUM(CASE WHEN w.status = \'pending_review\' THEN 1 ELSE 0 END) AS pending_review,
                 SUM(CASE WHEN w.status = \'under_review\' THEN 1 ELSE 0 END) AS under_review,
@@ -46,7 +46,30 @@ class AdminTeachersApiController extends Controller
                     v.title AS review_status, v.message AS review_note,
                     v.created_at AS reviewed_at, w.status AS workflow_status,
                     invite.email_status, invite.email_error,
-                    invite.sent_at AS message_sent_at
+                    invite.sent_at AS message_sent_at,
+                    CASE
+                        WHEN tp.cdc_id IS NOT NULL THEN \'This account is assigned to a CDC. Unassign it before deleting.\'
+                        WHEN EXISTS (
+                            SELECT 1 FROM classes assigned_class
+                            WHERE assigned_class.teacher_user_id = u.id
+                              AND assigned_class.status = \'active\'
+                        ) THEN \'This account is assigned to an active class. Unassign it before deleting.\'
+                        WHEN EXISTS (
+                            SELECT 1 FROM enrollment_applications assigned_application
+                            WHERE assigned_application.assigned_teacher_user_id = u.id
+                        ) THEN \'This account is assigned to an enrollment. Unassign it before deleting.\'
+                        WHEN EXISTS (
+                            SELECT 1 FROM learning_progress progress
+                            WHERE progress.teacher_user_id = u.id
+                        ) OR EXISTS (
+                            SELECT 1 FROM lesson_plans lesson
+                            WHERE lesson.teacher_user_id = u.id
+                        ) OR EXISTS (
+                            SELECT 1 FROM teacher_attendance attendance
+                            WHERE attendance.teacher_user_id = u.id
+                        ) THEN \'This account has teaching or attendance history. Deactivate it to preserve those records.\'
+                        ELSE NULL
+                    END AS delete_block_reason
              FROM users u
              LEFT JOIN teacher_profiles tp ON tp.user_id = u.id
              LEFT JOIN cdcs d ON d.id = tp.cdc_id
@@ -139,6 +162,8 @@ class AdminTeachersApiController extends Controller
                         'languages' => $teacher['languages'],
                         'employee_number' => $teacher['employee_number'],
                         'account_active' => (int) $teacher['is_active'] === 1,
+                        'can_delete' => $teacher['delete_block_reason'] === null,
+                        'delete_block_reason' => $teacher['delete_block_reason'],
                         'status' => $status,
                         'review_note' => $teacher['review_note'],
                         'reviewed_at' => $teacher['reviewed_at'],
@@ -256,7 +281,160 @@ class AdminTeachersApiController extends Controller
             $this->api->respond_error('Teacher account was not found.', 404);
             return;
         }
+        return $this->handle_review($admin, $teacher);
+    }
 
+    public function deactivate($id)
+    {
+        $this->api->require_method('PATCH');
+        $admin = $this->authenticated_admin();
+        if (!$admin) return;
+
+        $teacher_id = filter_var($id, FILTER_VALIDATE_INT);
+        if (!$teacher_id || $teacher_id < 1) {
+            $this->api->respond_error('Teacher account was not found.', 404);
+            return;
+        }
+        $input = $this->api->body(false);
+        $reason = is_array($input) && is_string($input['reason'] ?? null)
+            ? trim(mb_substr($input['reason'], 0, 1000))
+            : '';
+        if ($reason === '') {
+            $this->api->respond_error('Enter a reason for deactivating this teacher account.', 400);
+            return;
+        }
+
+        $this->db->transaction();
+        try {
+            $teacher = $this->db->raw(
+                'SELECT id, is_active FROM users
+                 WHERE id = ? AND role = \'teacher\' LIMIT 1 FOR UPDATE',
+                [(int) $teacher_id]
+            )->fetch(PDO::FETCH_ASSOC);
+            if (!$teacher) {
+                $this->db->roll_back();
+                $this->api->respond_error('Teacher account was not found.', 404);
+                return;
+            }
+            if ((int) $teacher['is_active'] !== 1) {
+                $this->db->roll_back();
+                $this->api->respond_error('This teacher account is already inactive.', 409);
+                return;
+            }
+
+            $now = date('Y-m-d H:i:s');
+            $this->db->table('users')->where('id', (int) $teacher_id)->update([
+                'is_active' => 0,
+                'updated_at' => $now,
+            ]);
+            $this->db->table(config_item('refresh_token_table'))
+                ->where('user_id', (int) $teacher_id)
+                ->delete();
+            $this->record_teacher_account_action(
+                (int) $admin['id'],
+                (int) $teacher_id,
+                'teacher_deactivated',
+                ['reason' => $reason],
+                $now
+            );
+            $this->db->commit();
+        } catch (Throwable $error) {
+            $this->db->roll_back();
+            throw $error;
+        }
+
+        $this->api->respond([
+            'status' => true,
+            'message' => 'Teacher account deactivated.',
+            'data' => ['id' => (int) $teacher_id, 'is_active' => false],
+        ]);
+    }
+
+    public function delete($id)
+    {
+        $this->api->require_method('DELETE');
+        $admin = $this->authenticated_admin();
+        if (!$admin) return;
+
+        $teacher_id = filter_var($id, FILTER_VALIDATE_INT);
+        if (!$teacher_id || $teacher_id < 1) {
+            $this->api->respond_error('Teacher account was not found.', 404);
+            return;
+        }
+        $input = $this->api->body(false);
+        $reason = is_array($input) && is_string($input['reason'] ?? null)
+            ? trim(mb_substr($input['reason'], 0, 1000))
+            : '';
+        if ($reason === '') {
+            $this->api->respond_error('Enter a reason for deleting this teacher account.', 400);
+            return;
+        }
+
+        $this->db->transaction();
+        try {
+            $teacher = $this->db->raw(
+                'SELECT u.id, u.email, u.first_name, u.middle_name, u.last_name,
+                        tp.cdc_id
+                 FROM users u
+                 LEFT JOIN teacher_profiles tp ON tp.user_id = u.id
+                 WHERE u.id = ? AND u.role = \'teacher\' LIMIT 1 FOR UPDATE',
+                [(int) $teacher_id]
+            )->fetch(PDO::FETCH_ASSOC);
+            if (!$teacher) {
+                $this->db->roll_back();
+                $this->api->respond_error('Teacher account was not found.', 404);
+                return;
+            }
+
+            $block_reason = $this->teacher_delete_block_reason(
+                (int) $teacher_id,
+                $teacher['cdc_id']
+            );
+            if ($block_reason !== null) {
+                $this->db->roll_back();
+                $this->api->respond_error($block_reason, 409);
+                return;
+            }
+
+            $now = date('Y-m-d H:i:s');
+            $this->record_teacher_account_action(
+                (int) $admin['id'],
+                (int) $teacher_id,
+                'teacher_deleted',
+                [
+                    'reason' => $reason,
+                    'name' => trim(implode(' ', array_filter([
+                        $teacher['first_name'],
+                        $teacher['middle_name'],
+                        $teacher['last_name'],
+                    ]))),
+                    'email' => $teacher['email'],
+                ],
+                $now
+            );
+            $this->db->table('users')->where('id', (int) $teacher_id)->delete();
+            $this->db->commit();
+        } catch (Throwable $error) {
+            $this->db->roll_back();
+            if ($error instanceof PDOException && (string) $error->getCode() === '23000') {
+                $this->api->respond_error(
+                    'This account cannot be deleted because it still has linked records. Deactivate it to preserve its history.',
+                    409
+                );
+                return;
+            }
+            throw $error;
+        }
+
+        $this->api->respond([
+            'status' => true,
+            'message' => 'Teacher account deleted.',
+            'data' => ['id' => (int) $teacher_id],
+        ]);
+    }
+
+    private function handle_review($admin, $teacher)
+    {
         $input = $this->api->body(false);
         $action = is_array($input) ? ($input['action'] ?? '') : '';
         $note = is_array($input) && is_string($input['note'] ?? null)
@@ -537,7 +715,30 @@ class AdminTeachersApiController extends Controller
                     v.title AS review_status, v.message AS review_note,
                     v.created_at AS reviewed_at, w.status AS workflow_status,
                     invite.email_status, invite.email_error,
-                    invite.sent_at AS message_sent_at
+                    invite.sent_at AS message_sent_at,
+                    CASE
+                        WHEN tp.cdc_id IS NOT NULL THEN \'This account is assigned to a CDC. Unassign it before deleting.\'
+                        WHEN EXISTS (
+                            SELECT 1 FROM classes assigned_class
+                            WHERE assigned_class.teacher_user_id = u.id
+                              AND assigned_class.status = \'active\'
+                        ) THEN \'This account is assigned to an active class. Unassign it before deleting.\'
+                        WHEN EXISTS (
+                            SELECT 1 FROM enrollment_applications assigned_application
+                            WHERE assigned_application.assigned_teacher_user_id = u.id
+                        ) THEN \'This account is assigned to an enrollment. Unassign it before deleting.\'
+                        WHEN EXISTS (
+                            SELECT 1 FROM learning_progress progress
+                            WHERE progress.teacher_user_id = u.id
+                        ) OR EXISTS (
+                            SELECT 1 FROM lesson_plans lesson
+                            WHERE lesson.teacher_user_id = u.id
+                        ) OR EXISTS (
+                            SELECT 1 FROM teacher_attendance attendance
+                            WHERE attendance.teacher_user_id = u.id
+                        ) THEN \'This account has teaching or attendance history. Deactivate it to preserve those records.\'
+                        ELSE NULL
+                    END AS delete_block_reason
              FROM users u
              LEFT JOIN teacher_profiles tp ON tp.user_id = u.id
              LEFT JOIN cdcs d ON d.id = tp.cdc_id
@@ -563,6 +764,7 @@ class AdminTeachersApiController extends Controller
             $teacher['first_name'], $teacher['middle_name'], $teacher['last_name'],
         ])));
         $teacher['verification_status'] = $teacher['workflow_status'] ?: 'pending_review';
+        $teacher['can_delete'] = $teacher['delete_block_reason'] === null;
         $teacher['email_status'] = $teacher['email_status'] ?: null;
         $teacher['message_sent_at'] = $teacher['message_sent_at'] ?: null;
         $teacher['status'] = $teacher['verification_status'] === 'active' && !$teacher['is_active']
@@ -752,5 +954,57 @@ class AdminTeachersApiController extends Controller
             return null;
         }
         return $user;
+    }
+
+    private function teacher_delete_block_reason($teacher_id, $cdc_id)
+    {
+        if ($cdc_id !== null) {
+            return 'This account is assigned to a CDC. Unassign it before deleting.';
+        }
+        $references = $this->db->raw(
+            'SELECT
+                EXISTS (
+                    SELECT 1 FROM classes
+                    WHERE teacher_user_id = ? AND status = \'active\'
+                ) AS assigned_class,
+                EXISTS (
+                    SELECT 1 FROM enrollment_applications
+                    WHERE assigned_teacher_user_id = ?
+                ) AS assigned_enrollment,
+                EXISTS (
+                    SELECT 1 FROM learning_progress WHERE teacher_user_id = ?
+                ) OR EXISTS (
+                    SELECT 1 FROM lesson_plans WHERE teacher_user_id = ?
+                ) OR EXISTS (
+                    SELECT 1 FROM teacher_attendance WHERE teacher_user_id = ?
+                ) AS has_history',
+            [(int) $teacher_id, (int) $teacher_id, (int) $teacher_id, (int) $teacher_id, (int) $teacher_id]
+        )->fetch(PDO::FETCH_ASSOC);
+        if ((int) $references['assigned_class'] === 1) {
+            return 'This account is assigned to an active class. Unassign it before deleting.';
+        }
+        if ((int) $references['assigned_enrollment'] === 1) {
+            return 'This account is assigned to an enrollment. Unassign it before deleting.';
+        }
+        if ((int) $references['has_history'] === 1) {
+            return 'This account has teaching or attendance history. Deactivate it to preserve those records.';
+        }
+        return null;
+    }
+
+    private function record_teacher_account_action($admin_id, $teacher_id, $action, array $metadata, $created_at)
+    {
+        $this->db->table('audit_logs')->insert([
+            'user_id' => (int) $admin_id,
+            'action' => $action,
+            'entity_type' => 'teacher',
+            'entity_id' => (int) $teacher_id,
+            'metadata_json' => json_encode(
+                $metadata,
+                JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR
+            ),
+            'ip_address' => $_SERVER['REMOTE_ADDR'] ?? null,
+            'created_at' => $created_at,
+        ]);
     }
 }

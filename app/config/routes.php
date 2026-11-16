@@ -143,6 +143,9 @@ $router->options('/api/admin/teachers/{id}/documents/{document_id}', 'AdminTeach
 $router->get('/api/admin/teachers/{id}/documents/{document_id}', 'AdminTeachersApiController::download_document');
 $router->options('/api/admin/teachers/{id}/review', 'AdminTeachersApiController::review');
 $router->patch('/api/admin/teachers/{id}/review', 'AdminTeachersApiController::review');
+$router->options('/api/admin/teachers/{id}/deactivate', 'AdminTeachersApiController::deactivate');
+$router->patch('/api/admin/teachers/{id}/deactivate', 'AdminTeachersApiController::deactivate');
+$router->delete('/api/admin/teachers/{id}', 'AdminTeachersApiController::delete');
 $router->options('/api/admin/teachers/{id}/message', 'AdminTeachersApiController::send_message');
 $router->post('/api/admin/teachers/{id}/message', 'AdminTeachersApiController::send_message');
 $router->options('/api/admin/users', 'AdminUsersApiController::index');
