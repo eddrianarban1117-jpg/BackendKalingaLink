@@ -184,6 +184,11 @@ registration now requires a six-digit code sent to the login email before the
 account can be submitted; codes expire after 15 minutes and allow up to five
 verification attempts.
 
+Migrations `028_child_transfer_workflow.php` through
+`030_receive_transfer_acceptance.php` add parent- and teacher-led child
+transfers, transfer/removal history, and receiving-teacher acknowledgement.
+Apply these migrations before using the child-transfer endpoints.
+
 For Render, prefer the Brevo HTTP API because it sends over HTTPS and does not
 depend on outbound SMTP access. Create a Brevo API key and set
 `BREVO_API_KEY` in the backend service environment, and set
